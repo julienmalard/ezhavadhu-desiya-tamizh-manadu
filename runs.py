@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import spotpy
 import xarray as xr
+from tikon.central.tiempo import Tiempo
 
 from model import web, exper_A, Oarenosella, Larval_paras, Pupal_paras
 from tikon.central import Modelo
@@ -19,14 +20,15 @@ from tikon.utils import asegurar_dir_existe
 
 """
 This code specifies all simulation runs used in the article. It does not actually run any simulations itself, but
-provides run specifications for the `analysis.py` file, where they are then run on demand (and so should not be run
-directly).
+provides run specifications for the `analysis.py` file, where they are then run on demand (and so should not itself 
+be run directly as a Python script).
 All simulation settings are specified here.
 """
 
 # Simulation settings
 start_date = '1982-04-01'
 final_day = 400
+t_sim = Tiempo(start_date, final_day)
 reps = {'paráms': 50, 'estoc': 5}
 
 n_iter_opt = 500
@@ -144,7 +146,7 @@ class SingleRun(object):
         filename = self._get_output_filename()
         # Execute run if output file is not found on disk.
         if not os.path.isfile(filename):
-            run((filename, self.mgmt, self.all_vars))
+            run((filename, (web, self.mgmt), self.all_vars))
 
         # Return results
         if stg is None:
@@ -363,7 +365,7 @@ class OptimisedRun(MultiRun):
         for i, days in enumerate(best_days):
             filename = self._get_output_filename(i)
             if not os.path.isfile(filename):
-                to_run[filename] = self._get_mgmt(days)
+                to_run[filename] = (web, self._get_mgmt(days))
 
         if parallel:
             with Pool() as p:
@@ -437,7 +439,7 @@ def run(*args):
         print(f'Running {filename}')
 
     simul = Modelo(modules)
-    res = simul.simular(final_day, reps=reps, exper=exper_A, t=start_date, calibs=EspecCalibsCorrida(aprioris=False))
+    res = simul.simular(final_day, reps=reps, exper=exper_A, t=t_sim, calibs=EspecCalibsCorrida(aprioris=False))
 
     res_final = process_results(res[str(exper_A)]['red']['Pobs'].res, all_=all_)
 
@@ -463,23 +465,23 @@ def process_results(res, all_=False):
 # Simple runs
 BaseRun = SingleRun('no control', mgmt=Manejo(), all_vars=True)
 NoPupalParas = SingleRun(
-    'without pupal paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob('Parasitoide pupa adulto', 0)))
+    'without pupal paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob(Pupal_paras['adulto'], 0)))
 )
 NoLarvalParas = SingleRun(
-    'without larval paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob('Parasitoide larvas adulto', 0)))
+    'without larval paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob(Larval_paras['adulto'], 0)))
 )
 NoPupalParasto150 = SingleRun(
     'without pupal paras to 150',
     mgmt=Manejo([
-        Regla(CondDía(150, Inferior), MultPob('Parasitoide pupa adulto', 0)),
-        Regla(CondDía(150), AgregarPob('Parasitoide pupa adulto', 100000))
+        Regla(CondDía(150, Inferior), MultPob(Pupal_paras['adulto'], 0)),
+        Regla(CondDía(150), AgregarPob(Pupal_paras['adulto'], 100000))
     ])
 )
 NoLarvalParasto150 = SingleRun(
     'without larval paras to 150',
     mgmt=Manejo([
-        Regla(CondDía(150, Inferior), MultPob('Parasitoide larvas adulto', 0)),
-        Regla(CondDía(150), AgregarPob('Parasitoide larvas adulto', 100000))
+        Regla(CondDía(150, Inferior), MultPob(Larval_paras['adulto'], 0)),
+        Regla(CondDía(150), AgregarPob(Larval_paras['adulto'], 100000))
     ])
 )
 
