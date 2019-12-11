@@ -1,18 +1,21 @@
 import os
-from copy import deepcopy
 from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
 import spotpy
-from tikon.central import Modelo
-from tikon.móds.rae.manejo import AgregarPob, MultPob, Acción
-from tikon.móds.manejo.conds import CondDía, SuperiorOIgual, CondCadaDía, Inferior
-from tikon.móds.rae.manejo import CondPoblación
-from tikon.móds.manejo import Manejo, Regla
-from tikon.utils import guardar_json, leer_json
+import xarray as xr
 
 from model import web, exper_A, Oarenosella, Larval_paras, Pupal_paras
+from tikon.central import Modelo
+from tikon.central.calibs import EspecCalibsCorrida
+from tikon.móds.manejo import Manejo, Regla
+from tikon.móds.manejo.conds import CondDía, SuperiorOIgual, CondCadaDía, Inferior
+from tikon.móds.rae.manejo import AgregarPob, MultPob
+from tikon.móds.rae.manejo import CondPoblación
+from tikon.móds.rae.orgs.organismo import EtapaFantasma
+from tikon.móds.rae.utils import EJE_ETAPA
+from tikon.utils import asegurar_dir_existe
 
 """
 This code specifies all simulation runs used in the article. It does not actually run any simulations itself, but
@@ -24,15 +27,16 @@ All simulation settings are specified here.
 # Simulation settings
 start_date = '1982-04-01'
 final_day = 400
-n_rep_param = 50
-n_rep_estoc = 5
+reps = {'paráms': 50, 'estoc': 5}
 
 n_iter_opt = 500
 n_keep_opt = 10
 
 opt_day_range = (25, 150)
 verbose = True
-out_dir = 'out'
+out_dir = 'out/runs'
+if not os.path.isdir(out_dir):
+    os.mkdir(out_dir)
 
 # Constants
 parasitoid_dose = 600000
@@ -42,20 +46,42 @@ eil = 655757.1429 * 0.5
 survival = 0.05  # Survival rate from pesticides
 
 # Load calibrations
-web.cargar_calib('Site A calibs/red')
-exper_A.cargar_calib('Site A calibs')
+web.cargar_calibs('out/Site A calibs/red')
+exper_A.cargar_calibs('out/Site A calibs')
 
 # Get all life stages
-stages = [s for o in web for s in o]
+stages = web.etapas
 
 # "Ghosts" are Tiko'n's representation of parasitised insects that will mature into parasitoids
-ghosts_larvae = ['Parasitoide larvas juvenil en O. arenosella juvenil_{}'.format(i) for i in range(3, 6)]
-ghosts_pupa = ['Parasitoide pupa juvenil en O. arenosella pupa']
+unparasitised_larvae = [s for s in stages if s.org is Oarenosella and 'juvenil' in s.nombre]
+ghosts_larvae = [s for s in stages if isinstance(s, EtapaFantasma) and s.etp_hués in unparasitised_larvae]
+ghosts_pupa = [s for s in stages if isinstance(s, EtapaFantasma) and s.etp_hués == Oarenosella['pupa']]
+
+# Quick reference to specific life stages
+larvae = unparasitised_larvae + ghosts_larvae
+adults = [s for s in stages if s.nombre == 'adulto']
+pupa = [Oarenosella['pupa']] + ghosts_pupa
+not_eggs = [s for s in stages if s.nombre != 'huevo']
+nmbrs_sedent = ['pupa', 'huevo']
+not_sedent = [
+    s for s in stages
+    if (s.etp_hués.nombre not in nmbrs_sedent if isinstance(s, EtapaFantasma) else s.nombre not in nmbrs_sedent)
+]
+
+
+def stringify(res):
+    res.coords[EJE_ETAPA] = [str(x) for x in res.coords[EJE_ETAPA].values]
+    return res
+
+
+def destringify(res):
+    res.coords[EJE_ETAPA] = [next((s for s in stages if str(s) == v), v) for v in res.coords[EJE_ETAPA].values]
+    return res
 
 
 def get_larvae(n):
     """
-    Returns all O. arenosella larval stages in the model.
+    Returns O. arenosella larval stages from in the model.
 
     Parameters
     ----------
@@ -67,21 +93,14 @@ def get_larvae(n):
     list
         Larval stage objects or names, including parasitised (ghost) stages.
     """
-
     if isinstance(n, int):
         n = [n]
-    stgs = [x for x in stages if x.org is Oarenosella and any(x.nombre.endswith('juvenil_%i' % i) for i in n)]
-    stgs += ['Parasitoide larvas juvenil en O. arenosella juvenil_{}'.format(i) for i in n]
+    stgs = [
+               x for x in unparasitised_larvae if any(x.nombre.endswith('juvenil %i' % i) for i in n)
+           ] + [
+               x for x in ghosts_larvae if any(x.etp_hués.nombre.endswith('juvenil %i' % i) for i in n)
+           ]
     return stgs
-
-
-# Quick reference to specific life stages
-larvae = [s for s in stages if s.org is Oarenosella and 'juvenil' in s.nombre] + ghosts_larvae
-adults = [s for s in stages if s.nombre == 'adulto']
-pupa = [s for s in stages if s.org is Oarenosella and s.nombre == 'pupa'] + ghosts_pupa
-not_eggs = [s for s in stages if s.nombre != 'huevo'] + ghosts_larvae + ghosts_pupa
-not_sedent = [s for s in stages if s.nombre != 'pupa' and s.nombre != 'huevo'] + ghosts_larvae
-all_stages = stages + ghosts_larvae + ghosts_pupa
 
 
 class SingleRun(object):
@@ -107,15 +126,15 @@ class SingleRun(object):
         self.name = name
         self.all_vars = all_vars
 
-    def get_data(self, var=None):
+    def get_data(self, stg=None):
         """
         Obtains output data from the run. If the run has not yet been simulated, will also run the simulation.
         Otherwise, it will simply read from the previous simulation execution's output file on disk.
 
         Parameters
         ----------
-        var: str
-            Output variable of interest (optional).
+        stg: str | list
+            Output stage of interest (optional).
         Returns
         -------
         dict | np.ndarray
@@ -128,9 +147,9 @@ class SingleRun(object):
             run((filename, self.mgmt, self.all_vars))
 
         # Return results
-        if var is None:
-            return leer_json(filename)
-        return leer_json(filename)[var]
+        if stg is None:
+            return xr.open_dataarray(filename)
+        return xr.open_dataarray(filename).loc[{EJE_ETAPA: stg}]
 
     def _get_output_filename(self):
         """
@@ -141,7 +160,7 @@ class SingleRun(object):
         str
         """
 
-        return f'{out_dir}/{self.name}.json'
+        return f'{out_dir}/{self.name}.nc'
 
 
 class MultiRun(object):
@@ -164,7 +183,7 @@ class MultiRun(object):
         self.range_ = range_
         self.name = name
 
-    def get_data(self, parallel=True, var='sum_larvae'):
+    def get_data(self, parallel=True, var='sum larvae'):
         """
         Obtain data from all runs. Any runs whose output files are not found on disk will be re-run.
 
@@ -172,19 +191,23 @@ class MultiRun(object):
         ----------
         parallel: bool
             Whether to run in parallel on multiple computer cores or not.
-        var: str
+        var: str | list[str]
             Output variable of interest.
 
         Returns
         -------
-        np.ndarray
-            Array of output variable. Axis 0 is along `self.range_`.
+        xr.DataArray
+            Array of output variable. Dimension `multi` is along `self.range_`.
         """
 
         self.run(parallel=parallel)
-        return np.array(
-            [leer_json(self._get_output_filename(i))[var] for i in self.range_]
-        )
+        # noinspection PyTypeChecker
+        return destringify(
+            xr.concat(
+                [xr.open_dataarray(self._get_output_filename(i)).expand_dims({'multi': [i]}) for i in self.range_],
+                dim='multi'
+            )
+        ).loc[{EJE_ETAPA: var}]
 
     def run(self, parallel=True):
         """
@@ -201,15 +224,14 @@ class MultiRun(object):
         for i in self.range_:
             filename = self._get_output_filename(i)
             if not os.path.isfile(filename):
-                to_run[filename] = self._get_mgmt(i)
+                to_run[filename] = (web, self._get_mgmt(i))
 
         # Run all missing runs, either in parallel or else sequentially.
         if parallel:
             with Pool() as p:
                 p.map(run, to_run.items())
         else:
-            for f, s in to_run.items():
-                run(f, s)
+            list(map(run, to_run.items()))
 
     def _get_output_filename(self, i):
         """
@@ -225,7 +247,7 @@ class MultiRun(object):
         str
         """
 
-        return f'{out_dir}/{self.name}/{i}.json'
+        return f'{out_dir}/{self.name}/{i}.nc'
 
     def _get_mgmt(self, i):
         """
@@ -248,6 +270,7 @@ class DateRun(MultiRun):
     """
     A `MultiRun` where multiple runs represent the same management action applied on different dates.
     """
+
     def __init__(self, name, range_, action):
         """
         Initialises the runs.
@@ -266,7 +289,7 @@ class DateRun(MultiRun):
         super().__init__(name, range_=range_)
 
     def _get_mgmt(self, i):
-        return Manejo(Regla(CondTiempo(i), self.action))
+        return Manejo(Regla(CondDía(i), self.action))
 
 
 class DynamicRun(MultiRun):
@@ -314,8 +337,8 @@ class OptimisedRun(MultiRun):
             return pd.read_json(filename)
 
         sampler = spotpy.algorithms.dds(
-            _SpotPyMod(lambda x: run((None, self._get_mgmt(x))), self.n_pupa + self.n_larva),
-            dbformat='ram', parallel='mpc', save_sim=False, alt_objfun=None
+            _SpotPyMod(lambda x: run((None, [web, self._get_mgmt(x)])), self.n_pupa + self.n_larva),
+            dbformat='ram', parallel='mpc', save_sim=False
         )
         sampler.sample(n_iter_opt)
         data = sampler.getdata()
@@ -357,13 +380,14 @@ class OptimisedRun(MultiRun):
             AgregarPob(Pupal_paras['adulto'] if (t < self.n_pupa) else Larval_paras['adulto'], dose) for t in
             range(n_days)
         ]
-        return Manejo([Regla(CondTiempo(int(t)), a) for a, t in zip(actions, days)])
+        return Manejo([Regla(CondDía(int(t)), a) for a, t in zip(actions, days)])
 
 
 class _SpotPyMod(object):
     """
     Special class for SpotPy integration. See SpotPy documentation for details.
     """
+
     def __init__(self, run_f, n_days):
         """
         Initialise the class.
@@ -392,76 +416,70 @@ class _SpotPyMod(object):
         return [0]  # Not needed; kept for compatibility with SpotPy
 
     @staticmethod
-    def objectivefunction(simulation, evaluation):
-        # Note: `evaluation` parameter not used but kept for SpotPy compatibility
-
+    def objectivefunction(simulation, evaluation, params=None):
+        # Note: `evaluation` and `params` parameters not used but kept for SpotPy compatibility
         return -np.log(simulation + 1)  # We want to minimise insect-days above the eil
 
     @staticmethod
     def _calc_above_eil(result):
-        return np.sum(np.maximum(0, result['sum_larvae'] - eil)) / eil
+        return np.sum(np.maximum(0, result.loc[{EJE_ETAPA: 'sum larvae'}] - eil)).item() / eil
 
 
 def run(*args):
-    arg = args[0]
-    if len(arg) == 2:
-        filename, mgmt = arg
+    args = args[0]
+    if len(args) == 2:
+        filename, modules = args
         all_ = False
     else:
-        filename, mgmt, all_ = arg
-
-    web_copy = deepcopy(web)
-    exp_copy = deepcopy(exper_A)
+        filename, modules, all_ = args
 
     if verbose and filename:
         print(f'Running {filename}')
 
-    simul = Simulador([web_copy, mgmt])
-    res = simul.simular(final_day, n_rep_parám=n_rep_param, n_rep_estoc=n_rep_estoc, exper=exp_copy)
+    simul = Modelo(modules)
+    res = simul.simular(final_day, reps=reps, exper=exper_A, t=start_date, calibs=EspecCalibsCorrida(aprioris=False))
 
-    d_res_final = process_results(res, all_=all_)
-    if filename is not None:
-        guardar_json(d_res_final, archivo=filename)
+    res_final = process_results(res[str(exper_A)]['red']['Pobs'].res, all_=all_)
 
-    return d_res_final
+    if filename is None:
+        return res_final
+    asegurar_dir_existe(filename)
+    stringify(res_final).to_netcdf(filename)
 
 
 def process_results(res, all_=False):
-    d_res = {}
-    for v in res['red']:
-        if v.matr_t is not None:
-            d_res[str(v)] = {}
-            for e in v.matr_t.dims._coords['etapa']:
-                d_res[str(v)][str(e)] = v.matr_t.obt_valor(índs={'etapa': e}).tolist()
+    # Need to de- and then re-stringify in the case of pooled parallel runs to ensure that the `etapa` axis matches
+    # up with actual life stage objects in `unparasitised_larvae`.
+    res = destringify(stringify(res.copy()))
 
-    d_res_final = {
-        'sum_larvae': np.sum([d_res['Pobs']['O. arenosella juvenil_%i' % i] for i in range(1, 6)], axis=0)
-    }
+    # Only sum unparasitised here because ghost stages are automatically added to regular stages at end of simulations
+    final = res.loc[{EJE_ETAPA: unparasitised_larvae}].sum(dim=EJE_ETAPA).expand_dims({EJE_ETAPA: ['sum larvae']})
+
     if all_:
-        d_res_final.update(d_res['Pobs'])
-    return d_res_final
+        return xr.concat([final, res], dim=EJE_ETAPA)
+    return final
 
 
 # Simple runs
 BaseRun = SingleRun('no control', mgmt=Manejo(), all_vars=True)
 NoPupalParas = SingleRun(
-    'without pupal paras', mgmt=Manejo(Regla(CondCada(1), MultPob('Parasitoide pupa adulto', 0)))
+    'without pupal paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob('Parasitoide pupa adulto', 0)))
 )
 NoLarvalParas = SingleRun(
-    'without larval paras', mgmt=Manejo(Regla(CondCada(1), MultPob('Parasitoide larvas adulto', 0)))
+    'without larval paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob('Parasitoide larvas adulto', 0)))
 )
 NoPupalParasto150 = SingleRun(
     'without pupal paras to 150',
     mgmt=Manejo([
-        Regla(CondTiempo(150, Inferior), MultPob('Parasitoide pupa adulto', 0)),
-        Regla(CondTiempo(150), AgregarPob('Parasitoide pupa adulto', 100000))
+        Regla(CondDía(150, Inferior), MultPob('Parasitoide pupa adulto', 0)),
+        Regla(CondDía(150), AgregarPob('Parasitoide pupa adulto', 100000))
     ])
 )
 NoLarvalParasto150 = SingleRun(
     'without larval paras to 150',
     mgmt=Manejo([
-        Regla(CondTiempo(150, Inferior), MultPob('Parasitoide larvas adulto', 0)),
-        Regla(CondTiempo(150), AgregarPob('Parasitoide larvas adulto', 100000))
+        Regla(CondDía(150, Inferior), MultPob('Parasitoide larvas adulto', 0)),
+        Regla(CondDía(150), AgregarPob('Parasitoide larvas adulto', 100000))
     ])
 )
 
@@ -471,7 +489,7 @@ time_range = range(1, 61, 2)
 RunPesticideAdults = DateRun('fd pstcd expt adult', time_range, action=[MultPob(s, survival) for s in adults])
 RunPesticideExcptEggs = DateRun('fd pstcd expt eggs', time_range, action=[MultPob(s, survival) for s in not_eggs])
 RunPesticideExcptSedent = DateRun('fd pstcd expt sedent', time_range, action=[MultPob(s, survival) for s in not_sedent])
-RunPesticideGeneral = DateRun('fd pstcd general', time_range, action=[MultPob(s, survival) for s in all_stages])
+RunPesticideGeneral = DateRun('fd pstcd general', time_range, action=[MultPob(s, survival) for s in stages])
 RunBiocontrolPupa = DateRun('fd biocntrl pupa', time_range, action=AgregarPob(Pupal_paras['adulto'], parasitoid_dose))
 RunBiocontrolLarva = DateRun(
     'fd biocntrl larva', time_range, action=AgregarPob(Larval_paras['adulto'], parasitoid_dose)

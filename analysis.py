@@ -8,33 +8,15 @@ from scipy.signal import savgol_filter
 from runs import eil, RunPesticideExcptEggs, RunPesticideGeneral, RunBiocontrolPupa, DRunBiocontrolPupa, \
     time_range, DRunBiocontrolLarva, RunBiocontrolLarva, ORunBiocontrolPupa3, ORunBiocontrolLarvas3, BaseRun, \
     NoPupalParasto150, NoLarvalParasto150
+from tikon.móds.rae.utils import EJE_ETAPA
+from tikon.utils import EJE_TIEMPO, EJE_ESTOC, EJE_PARÁMS, EJE_PARC, proc_líms
 
 """
 This is the code used to run all analyses and generate all figures present in the article.
 """
 
-rep_axes = (-1, -2, -3)
-ax_time = 1
-ax_multi = 0
-dir_figs = 'figs'
-
-
-def slice_time(r, sl, multi=True):
-    ax_t = ax_time if multi else ax_time - 1
-    return get_x(r, sl, multi=multi), r[[slice(None)] * ax_t + [sl]]
-
-
-def get_x(r, sl, multi=True):
-    ax_t = ax_time if multi else ax_time - 1
-    return np.arange(r.shape[ax_t])[sl]
-
-
-def get_median(r):
-    return np.median(r, axis=ax_multi)
-
-
-def get_ci(r, c):
-    return np.percentile(r, c, axis=ax_multi)
+dir_figs = 'out/figs'
+dims_reps = [EJE_ESTOC, EJE_PARÁMS]
 
 
 def get_above_eil(r, norm=True):
@@ -44,17 +26,13 @@ def get_above_eil(r, norm=True):
 
 
 def get_risk_above_eil(r):
-    return np.mean(np.greater_equal(r, eil), axis=rep_axes)
+    return np.greater_equal(r, eil).mean(dim=dims_reps)
 
 
 def _smooth(m, window=15, poly=3, lims=None):
     m = savgol_filter(m, window, poly)
-    if lims is not None:
-        if lims[0] is not None:
-            m = np.maximum(m, lims[0])
-        if lims[1] is not None:
-            m = np.minimum(m, lims[1])
-    return m
+    lims = proc_líms(lims)
+    return np.maximum(np.minimum(m, lims[1]), lims[0])
 
 
 def plot_population(ax, m_res, percentiles=None, shadow=False, post=''):
@@ -108,12 +86,12 @@ def plot_population(ax, m_res, percentiles=None, shadow=False, post=''):
 
 
 if __name__ == '__main__':
-    base_data = BaseRun.get_data()
-    larvae_base = base_data['sum_larvae']
-    larvae_345 = np.sum([base_data['O. arenosella juvenil_%i' % i] for i in range(3, 6)], axis=0)
-    pupal_base = base_data['O. arenosella pupa']
-    pupal_paras_base = base_data['Parasitoide pupa juvenil']
-    larval_paras_base = base_data['Parasitoide larvas juvenil']
+    base_data = BaseRun.get_data().squeeze(EJE_PARC)  # We only have 1 field anyways
+    larvae_base = base_data.loc[{EJE_ETAPA: 'sum larvae'}]
+    larvae_345 = base_data.loc[{EJE_ETAPA: ['O. arenosella : juvenil %i' % i] for i in range(3, 6)}]
+    pupal_base = base_data.loc[{EJE_ETAPA: 'O. arenosella : pupa'}]
+    pupal_paras_base = base_data.loc[{EJE_ETAPA: 'Parasitoide pupa : juvenil'}]
+    larval_paras_base = base_data.loc[{EJE_ETAPA: 'Parasitoide larvas : juvenil'}]
 
     if not os.path.isdir(dir_figs):
         os.makedirs(dir_figs)
@@ -124,7 +102,7 @@ if __name__ == '__main__':
         'General pesticide': RunPesticideGeneral,
         'Pupal parasitoid biocontrol': RunBiocontrolPupa,
     }
-    data = {ll: v.get_data() for ll, v in to_include.items()}
+    data = {ll: v.get_data(parallel=True) for ll, v in to_include.items()}
 
     fig = Figure(figsize=(6 * 3, 6))
     FigureCanvasAgg(fig)
@@ -134,38 +112,48 @@ if __name__ == '__main__':
     slc = slice(60, None)
     cut_dmg = 60
     fixed_days = np.array(time_range)
+
     for run, res in data.items():
-        x, res_t = slice_time(res, sl=slc)
+        res = res.squeeze(EJE_PARC)
+
+        res_t = res[{EJE_TIEMPO: slc}]
         risk = get_risk_above_eil(res_t)
 
-        ax1.plot(x, get_median(risk), label=run)
-        ax1.fill_between(x, get_ci(risk, 5), get_ci(risk, 95), alpha=0.25)
+        x = res_t[EJE_TIEMPO].values
+        ax1.plot(x, risk.median(dim='multi'), label=run)
+        ax1.fill_between(x, risk.quantile(0.05, dim='multi'), risk.quantile(0.95, dim='multi'), alpha=0.25)
 
 
         def plot_damage(ax, dmg):
-            ax.plot(fixed_days, _smooth(np.median(dmg, axis=rep_axes), window=9, lims=(0, None)))
+            ax.plot(fixed_days, _smooth(dmg.median(dim=dims_reps), window=9, lims=(0, None)))
             ax.fill_between(
                 fixed_days,
-                _smooth(np.percentile(dmg, 5, axis=rep_axes), window=9, lims=(0, None)),
-                _smooth(np.percentile(dmg, 95, axis=rep_axes), window=9, lims=(0, None)),
+                _smooth(dmg.quantile(.05, dim=dims_reps), window=9, lims=(0, None)),
+                _smooth(dmg.quantile(.95, dim=dims_reps), window=9, lims=(0, None)),
                 alpha=0.25
             )
 
 
-        above_eil_start = np.sum(get_above_eil(slice_time(res, sl=slice(None, cut_dmg))[1]), axis=ax_time)
-        above_eil_end = np.sum(get_above_eil(slice_time(res, sl=slice(cut_dmg, None))[1]), axis=ax_time)
+        above_eil_start = get_above_eil(res[{EJE_TIEMPO: slice(None, cut_dmg)}]).sum(dim=EJE_TIEMPO)
+        above_eil_end = get_above_eil(res[{EJE_TIEMPO: slice(cut_dmg, None)}]).sum(dim=EJE_TIEMPO)
 
         plot_damage(ax2, above_eil_start)
         plot_damage(ax3, above_eil_end)
 
-    x_base, base_data = slice_time(larvae_base, sl=slc, multi=False)
+    base_data = larvae_base[{EJE_TIEMPO: slc}]
+    x_base = base_data[EJE_TIEMPO].values
     ax1.plot(x_base, get_risk_above_eil(base_data), linestyle='dashed', color='#000000', label='Without control')
 
-    base_above_eil = np.median(get_above_eil(larvae_base), axis=rep_axes)
-    ax2.plot(fixed_days, np.full(fixed_days.shape, np.sum(base_above_eil[:cut_dmg])), linestyle='dashed',
-             color='#000000')
-    ax3.plot(fixed_days, np.full(fixed_days.shape, np.sum(base_above_eil[cut_dmg:])), linestyle='dashed',
-             color='#000000')
+    base_above_eil = get_above_eil(larvae_base).median(dim=dims_reps)
+    ax2.plot(
+        fixed_days, np.full(fixed_days.shape, base_above_eil[{EJE_TIEMPO: slice(None, cut_dmg)}].sum()),
+        linestyle='dashed', color='#000000'
+    )
+    ax3.plot(
+        fixed_days, np.full(fixed_days.shape, base_above_eil[{EJE_TIEMPO: slice(cut_dmg, None)}].sum()),
+        linestyle='dashed',
+        color='#000000'
+    )
 
     ax1.set_ylabel('Risk of economic injury', fontsize=16)
     ax1.set_xlabel('Day of simulation', fontsize=16)
@@ -193,23 +181,27 @@ if __name__ == '__main__':
 
     to_include = {
         ax1: {
-            'Fixed date': RunBiocontrolLarva, 'Economic threshold': DRunBiocontrolLarva, 'Optimised': ORunBiocontrolLarvas3
+            'Fixed date': RunBiocontrolLarva, 'Economic threshold': DRunBiocontrolLarva,
+            'Optimised': ORunBiocontrolLarvas3
         },
         ax2: {
             'Fixed date': RunBiocontrolPupa, 'Economic threshold': DRunBiocontrolPupa, 'Optimised': ORunBiocontrolPupa3
         }
     }
-    data = {axis: {name: run.get_data() for name, run in include.items()} for axis, include in to_include.items()}
-    without_paras_pupa = NoPupalParasto150.get_data('sum_larvae')
-    without_paras_larvae = NoLarvalParasto150.get_data('sum_larvae')
+    data = {
+        axis: {name: run.get_data(parallel=False) for name, run in include.items()}
+        for axis, include in to_include.items()
+    }
+    without_paras_pupa = NoPupalParasto150.get_data('sum larvae')
+    without_paras_larvae = NoLarvalParasto150.get_data('sum larvae')
 
     for axis, include in data.items():
 
         for name, run in include.items():
             x, res_t = slice_time(run, sl=slc)
             risk = get_risk_above_eil(res_t)
-            axis.plot(x, get_median(risk), label=name)
-            axis.fill_between(x, get_ci(risk, 5), get_ci(risk, 95), alpha=0.25)
+            axis.plot(x, risk.median(dim='multi'), label=name)
+            axis.fill_between(x, risk.quantile(0.05, dim='multi'), risk.quantile(0.95, dim='multi'), alpha=0.25)
 
     time_slice = slice(25, 200)
 

@@ -1,12 +1,14 @@
 import os
 from pprint import pprint
 
-from tikon.ejemplos.a_prioris import a_prioris
-from tikon.estruc.simulador import Simulador
-from tikon.exper.exper import Exper
-from tikon.rae.orgs.insectos import MetamCompleta, Parasitoide
-from tikon.rae.red_ae import RedAE
-from tikon.rae.red_ae.obs import ObsPobs
+from a_prioris import a_prioris
+from tikon.central import Modelo, Parcela
+from tikon.central.calibs import EspecCalibsCorrida
+from tikon.central.exper import Exper
+from tikon.central.parc import GeomParcela
+from tikon.móds.rae.orgs.insectos import MetamCompleta, Parasitoide
+from tikon.móds.rae.red import RedAE
+from tikon.móds.rae.red.obs import ObsPobs
 
 """
 This code sets up the agroecological network for simulations. When run as a script (vs. simply importing from this 
@@ -19,44 +21,53 @@ Larval_paras = Parasitoide('Parasitoide larvas', pupa=True)
 Pupal_paras = Parasitoide('Parasitoide pupa')
 
 # Trophic relationships
-Larval_paras.parasita(Oarenosella, ['juvenil_3', 'juvenil_4', 'juvenil_5'], etp_emerg='juvenil_5')
+Larval_paras.parasita(Oarenosella, ['juvenil 3', 'juvenil 4', 'juvenil 5'], etp_emerg='juvenil 5')
 Pupal_paras.parasita(Oarenosella, 'pupa', etp_emerg='pupa')
 
 # Create food web
 web = RedAE([Oarenosella, Larval_paras, Pupal_paras])
 
-# A prioris for the new web
-web.espec_aprioris(a_prioris)
-
 # Observed data
 dir_base = os.path.split(__file__)[0]
-pobs = ObsPobs.de_csv(
+pobs = ObsPobs.de_cuadro(
     os.path.join(dir_base, 'Oarenosella_A.csv'),
-    col_tiempo='Día',
+    parcela='Site A',
+    tiempo='Día',
     corresp={
-        'Estado 1': Oarenosella['juvenil_1'],
-        'Estado 2': Oarenosella['juvenil_2'],
-        'Estado 3': Oarenosella['juvenil_3'],
-        'Estado 4': Oarenosella['juvenil_4'],
-        'Estado 5': Oarenosella['juvenil_5'],
+        'Estado 1': Oarenosella['juvenil 1'],
+        'Estado 2': Oarenosella['juvenil 2'],
+        'Estado 3': Oarenosella['juvenil 3'],
+        'Estado 4': Oarenosella['juvenil 4'],
+        'Estado 5': Oarenosella['juvenil 5'],
         'Pupa': Oarenosella['pupa'],
         'Para_larva_abs': Larval_paras['juvenil'],
         'Para_pupa_abs': Pupal_paras['juvenil']
     },
     factor=655757.1429 / 500  # Convert from individuals per 500 leaflets to individuals per ha
 )
-exper_A = Exper('Site A', pobs)
-simul = Simulador(web)
+exper_A = Exper('Site A', Parcela('Site A', geom=GeomParcela((7.297, 79.865))))
+exper_A.datos.agregar_obs(pobs)
+simul = Modelo(web)
 
 if __name__ == '__main__':
+
+    # A prioris for the new web
+    for ins, l_aprioris in a_prioris.items():
+        for d_apr in l_aprioris:
+            etp = d_apr.pop('stage')
+            web[ins][etp].espec_apriori(**d_apr)
+
     # Calibrate
-    simul.calibrar('Sitio A', exper=exper_A)
+    start_date = '1982-04-01'  # Perera article is unclear about precise start month, but it seems to be in 1982.
+    simul.calibrar('Sitio A', exper=exper_A, t=start_date)
 
     # Save results
-    simul.guardar_calib(f'Site A calibs')
-    exper_A.guardar_calib(f'Site A calibs')
+    simul.guardar_calibs('out/Site A calibs')
+    exper_A.guardar_calibs('out/Site A calibs')
 
     # Validate and graph
-    res2 = simul.simular(exper=exper_A, vars_interés=True)
-    pprint(res2.validar())
-    res2.graficar('imgs')
+    res = simul.simular(
+        'valid', exper=exper_A, reps=30, t=start_date, calibs=EspecCalibsCorrida(aprioris=False), depurar=True
+    )
+    pprint(res.validar().a_dic())
+    res.graficar('out/imgs')
