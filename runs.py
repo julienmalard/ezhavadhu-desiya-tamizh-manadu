@@ -5,11 +5,9 @@ import numpy as np
 import pandas as pd
 import spotpy
 import xarray as xr
-from tikon.central.tiempo import Tiempo
-
-from model import web, exper_A, Oarenosella, Larval_paras, Pupal_paras
 from tikon.central import Modelo
 from tikon.central.calibs import EspecCalibsCorrida
+from tikon.central.tiempo import Tiempo
 from tikon.móds.manejo import Manejo, Regla
 from tikon.móds.manejo.conds import CondDía, SuperiorOIgual, CondCadaDía, Inferior
 from tikon.móds.rae.manejo import AgregarPob, MultPob
@@ -17,6 +15,8 @@ from tikon.móds.rae.manejo import CondPoblación
 from tikon.móds.rae.orgs.organismo import EtapaFantasma
 from tikon.móds.rae.utils import EJE_ETAPA
 from tikon.utils import asegurar_dir_existe
+
+from model import web, exper_A, Oarenosella, Larval_paras, Pupal_paras
 
 """
 This code specifies all simulation runs used in the article. It does not actually run any simulations itself, but
@@ -29,7 +29,7 @@ All simulation settings are specified here.
 start_date = '1982-04-01'
 final_day = 400
 t_sim = Tiempo(start_date, final_day)
-reps = {'paráms': 50, 'estoc': 5}
+reps = {'paráms': 70, 'estoc': 5}
 
 n_iter_opt = 500
 n_keep_opt = 10
@@ -41,7 +41,7 @@ if not os.path.isdir(out_dir):
     os.mkdir(out_dir)
 
 # Constants
-parasitoid_dose = 600000
+parasitoid_dose = 300000
 dynamic_paras_dose = parasitoid_dose / 3
 
 eil = 655757.1429 * 0.5
@@ -334,7 +334,8 @@ class OptimisedRun(MultiRun):
         super().__init__(name=name, range_=range(n_keep_opt))
 
     def optimise(self):
-        filename = f'{out_dir}/{self.name}/best days.json'
+        dir_res = f'{out_dir}/{self.name}'
+        filename = f'{dir_res}/best days.json'
         if os.path.isfile(filename):
             return pd.read_json(filename)
 
@@ -344,6 +345,10 @@ class OptimisedRun(MultiRun):
         )
         sampler.sample(n_iter_opt)
         data = sampler.getdata()
+
+        if not os.path.isdir(dir_res):
+            os.makedirs(dir_res)
+        pd.DataFrame(data).to_csv(f'{dir_res}/output.csv')
         spotpy_out = spotpy.analyser.get_parameters(
             data[np.argpartition(data['like1'], -n_keep_opt)[-n_keep_opt:]]
         )
@@ -373,6 +378,14 @@ class OptimisedRun(MultiRun):
         else:
             for f, s in to_run.items():
                 run(f, s)
+
+    def get_fit(self):
+        filename = f'{out_dir}/{self.name}/output.csv'
+        if not os.path.isfile(filename):
+            self.optimise()
+
+        data = pd.read_csv(filename)
+        return data['like1']
 
     def _get_mgmt(self, days):
         n_days = self.n_larva + self.n_pupa
@@ -488,10 +501,10 @@ NoLarvalParasto150 = SingleRun(
 # Time range for fixed date actions
 time_range = range(1, 61, 2)
 
-RunPesticideAdults = DateRun('fd pstcd expt adult', time_range, action=[MultPob(s, survival) for s in adults])
-RunPesticideExcptEggs = DateRun('fd pstcd expt eggs', time_range, action=[MultPob(s, survival) for s in not_eggs])
-RunPesticideExcptSedent = DateRun('fd pstcd expt sedent', time_range, action=[MultPob(s, survival) for s in not_sedent])
-RunPesticideGeneral = DateRun('fd pstcd general', time_range, action=[MultPob(s, survival) for s in stages])
+RunPesticideAdults = DateRun('fd pstcd expt adult', time_range, action=MultPob([s for s in adults], survival))
+RunPesticideExcptEggs = DateRun('fd pstcd expt eggs', time_range, action=MultPob([s for s in not_eggs], survival))
+RunPesticideExcptSedent = DateRun('fd pstcd expt sedent', time_range, action=MultPob([s for s in not_sedent], survival))
+RunPesticideGeneral = DateRun('fd pstcd general', time_range, action=MultPob([s for s in stages], survival))
 RunBiocontrolPupa = DateRun('fd biocntrl pupa', time_range, action=AgregarPob(Pupal_paras['adulto'], parasitoid_dose))
 RunBiocontrolLarva = DateRun(
     'fd biocntrl larva', time_range, action=AgregarPob(Larval_paras['adulto'], parasitoid_dose)
