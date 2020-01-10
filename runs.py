@@ -451,8 +451,8 @@ def run(*args):
     if verbose and filename:
         print(f'Running {filename}')
 
-    simul = Modelo(modules)
-    res = simul.simular(final_day, reps=reps, exper=exper_A, t=t_sim, calibs=EspecCalibsCorrida(aprioris=False))
+    model = Modelo(modules)
+    res = model.simular(final_day, reps=reps, exper=exper_A, t=t_sim, calibs=EspecCalibsCorrida(aprioris=False))
 
     res_final = process_results(res[str(exper_A)]['red']['Pobs'].res, all_=all_)
 

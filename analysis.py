@@ -1,4 +1,5 @@
 import os
+from pprint import pprint
 
 import numpy as np
 import pandas as pd
@@ -6,9 +7,13 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from scipy.signal import savgol_filter
 
+from model import exper_A, web
 from runs import eil, RunPesticideExcptEggs, RunPesticideGeneral, RunBiocontrolPupa, DRunBiocontrolPupa, \
     time_range, DRunBiocontrolLarva, RunBiocontrolLarva, ORunBiocontrolPupa3, ORunBiocontrolLarvas3, BaseRun, \
-    NoPupalParasto150, NoLarvalParasto150, start_date
+    NoPupalParasto150, NoLarvalParasto150, start_date, reps
+from tikon.central import Modelo
+from tikon.central.calibs import EspecCalibsCorrida
+from tikon.datos.proc import r2, ens
 from tikon.móds.rae.utils import EJE_ETAPA
 from tikon.utils import EJE_TIEMPO, EJE_ESTOC, EJE_PARÁMS, EJE_PARC, proc_líms
 
@@ -17,7 +22,7 @@ This is the code used to run all analyses and generate all figures present in th
 """
 
 dir_figs = 'out/figs'
-parallel = False
+parallel = True
 
 dims_reps = [EJE_ESTOC, EJE_PARÁMS]
 
@@ -38,12 +43,27 @@ def _smooth(m, window=15, poly=3, lims=None):
     return np.maximum(np.minimum(m, lims[1]), lims[0])
 
 
-def plot_population(ax, res_, quantiles=None, shadow=False, post=''):
+def plot_pobs(ax, stages):
+    obs = exper_A.datos.obt_obs('red', var='Pobs')[0].datos.copy()
+    obs.coords[EJE_ETAPA] = [str(y) for y in obs.coords[EJE_ETAPA].values]
+
+    t = obs[EJE_TIEMPO]
+    pobs = obs.loc[{EJE_ETAPA: stages}].squeeze(EJE_PARC)
+    if isinstance(stages, list):
+        pobs = pobs.sum(dim=EJE_ETAPA)
+
+    ax.plot(t, pobs, color='#000000', marker='o', markersize=3, label='Observed')
+
+
+def plot_population(ax, res_, quantiles=None, shadow=False, post='', t=None):
     """
     A useful function to graph modelled population outputs with uncertainty bounds.
     """
 
     color = '#99CC00'
+
+    if t:
+        res_ = res_[{EJE_TIEMPO: t}]
 
     # Plot median prediction
     x_ = _get_days(res_)
@@ -63,7 +83,7 @@ def plot_population(ax, res_, quantiles=None, shadow=False, post=''):
         max_prc = res_.quantile(0.50 + q / 2, dim=dims_reps)
         min_prc = res_.quantile((1 - q) / 2, dim=dims_reps)
 
-        p = int(q*100)
+        p = int(q * 100)
         if shadow:
             ax.plot(x_, max_prc, lw=1, linestyle=':', color='#000000', label='CI {} %'.format(p) + post)
             ax.plot(x_, min_prc, lw=1, linestyle=':', color='#000000')
@@ -92,17 +112,57 @@ def _get_days(m):
 
 
 if __name__ == '__main__':
+
+    model = Modelo(web)
+    res = model.simular('', reps=reps, exper=exper_A, calibs=EspecCalibsCorrida(aprioris=False))
+    pprint(res.validar(proc=[ens, r2]).a_dic())
+
     base_data = BaseRun.get_data().squeeze(EJE_PARC)  # We only have 1 field anyways
     larvae_base = base_data.loc[{EJE_ETAPA: 'sum larvae'}]
     larvae_345 = base_data.loc[{EJE_ETAPA: ['O. arenosella : juvenil %i' % i for i in range(3, 6)]}].sum(EJE_ETAPA)
-    pupal_base = base_data.loc[{EJE_ETAPA: 'O. arenosella : pupa'}]
+    pupae_base = base_data.loc[{EJE_ETAPA: 'O. arenosella : pupa'}]
     pupal_paras_base = base_data.loc[{EJE_ETAPA: 'Parasitoide pupa : juvenil'}]
     larval_paras_base = base_data.loc[{EJE_ETAPA: 'Parasitoide larvas : juvenil'}]
 
     if not os.path.isdir(dir_figs):
         os.makedirs(dir_figs)
 
-    # Figure 1
+    # Figure 2
+    fig = Figure(figsize=(12, 10))
+    FigureCanvasAgg(fig)
+    (ax1, ax2), (ax3, ax4) = fig.subplots(ncols=2, nrows=2, sharex='all')
+
+    plot_population(ax1, larvae_base, t=slice(0, 300))
+    plot_population(ax2, pupae_base, t=slice(0, 300))
+    plot_population(ax3, larval_paras_base, t=slice(0, 300))
+    plot_population(ax4, pupal_paras_base, t=slice(0, 300))
+
+    plot_pobs(ax1, stages=[f'O. arenosella : juvenil {i}' for i in range(1, 6)])
+    plot_pobs(ax2, stages='O. arenosella : pupa')
+    plot_pobs(ax3, stages='Parasitoide larvas : juvenil')
+    plot_pobs(ax4, stages='Parasitoide pupa : juvenil')
+
+    ax1.set_title('O. arenosella larvae', fontsize=20)
+    ax2.set_title('O. arenosella pupae', fontsize=20)
+    ax3.set_title('Juvenile larval parasitoid', fontsize=20)
+    ax4.set_title('Juvenile pupal parasitoid', fontsize=20)
+
+    ax1.set_ylabel('Population (ha-1)', fontsize=20)
+    ax3.set_ylabel('Population (ha-1)', fontsize=20)
+    ax3.set_xlabel('Days', fontsize=20)
+    ax4.set_xlabel('Days', fontsize=20)
+
+    for ax in [ax1, ax2, ax3, ax4]:
+        ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+
+    fig.autofmt_xdate()
+    fig.legend(
+        *ax1.get_legend_handles_labels(), loc='lower center', ncol=3, fontsize=20,
+    )
+    fig.subplots_adjust(bottom=0.2, wspace=0.20)
+    fig.savefig(f'{dir_figs}/Fig 2.jpeg')
+
+    # Figure 3
     to_include = {
         'Pesticide except eggs': RunPesticideExcptEggs,
         'General pesticide': RunPesticideGeneral,
@@ -113,14 +173,12 @@ if __name__ == '__main__':
     fig = Figure(figsize=(6 * 3, 6))
     FigureCanvasAgg(fig)
     axes = [ax1, ax2, ax3] = fig.subplots(ncols=3)
-    ax2.get_shared_y_axes().join(ax2, ax3)
 
     slc12 = slice(60, None)
     cut_dmg = 60
     fixed_days = np.array(time_range)
 
     for run, res in data.items():
-
         res_t = res[{EJE_TIEMPO: slc12}]
         risk = get_risk_above_eil(res_t)
 
@@ -175,9 +233,24 @@ if __name__ == '__main__':
     fig.subplots_adjust(bottom=0.22, top=0.8, wspace=0.3, left=0.07, right=1 - 0.07)
     fig.legend(*ax1.get_legend_handles_labels(), loc='lower center', ncol=4, fontsize=15)
 
-    fig.savefig(f'{dir_figs}/Fig 1.jpeg')
+    fig.savefig(f'{dir_figs}/Fig 3.jpeg')
 
-    # Figure 2
+    # Figure 4
+    fig = Figure()
+    FigureCanvasAgg(fig)
+    axes = fig.subplots()
+    fit_larvae, fit_pupa = ORunBiocontrolLarvas3.get_fit(), ORunBiocontrolPupa3.get_fit()
+    axes.plot(-fit_larvae.cummax(), label='Larval parasitoid')
+    axes.plot(-fit_pupa.cummax(), label='Pupal parasitoid')
+
+    axes.set_xlabel('Iteration', fontsize=16)
+    axes.set_ylabel('Best function value', fontsize=16)
+    fig.legend(loc='lower center', ncol=2, fontsize=12)
+
+    fig.subplots_adjust(bottom=0.2)
+    fig.savefig(f'{dir_figs}/Fig 4.jpeg')
+
+    # Figure 5
     fig = Figure(figsize=(12, 14))
     FigureCanvasAgg(fig)
     axes = [(ax1, ax2), (ax3, ax4), (ax5, ax6)] = fig.subplots(ncols=2, nrows=3)
@@ -216,7 +289,7 @@ if __name__ == '__main__':
         alpha=0.01
     )
     ax4.scatter(
-        pupal_base[{EJE_TIEMPO: slc34}], pupal_paras_base[{EJE_TIEMPO: slc34}] / pupal_base[{EJE_TIEMPO: slc34}],
+        pupae_base[{EJE_TIEMPO: slc34}], pupal_paras_base[{EJE_TIEMPO: slc34}] / pupae_base[{EJE_TIEMPO: slc34}],
         alpha=0.01
     )
 
@@ -245,16 +318,16 @@ if __name__ == '__main__':
 
     ax3.set_title('Larval parasitoid - efficiency', fontsize=18)
     ax3.set_ylabel('Parasitism (%)', fontsize=14)
-    ax3.set_xlabel('Host population (ha -1)', fontsize=16)
+    ax3.set_xlabel('Host population (per ha)', fontsize=16)
     ax3.ticklabel_format(style='sci', axis='x', scilimits=(0, 0))
 
     ax4.set_title('Pupal parasitoid - efficiency', fontsize=18)
-    ax4.set_xlabel('Host population (ha -1)', fontsize=16)
+    ax4.set_xlabel('Host population (per ha)', fontsize=16)
     ax4.ticklabel_format(style='sci', axis='x', scilimits=(0, 0))
     ax4.set_yticklabels([])
 
     ax5.set_title('Without larval parasitoid', fontsize=18)
-    ax5.set_ylabel('O. arenosella larvae (ha -1)', fontsize=14)
+    ax5.set_ylabel('O. arenosella larvae (per ha)', fontsize=14)
     ax5.set_xlabel('Day of simulation', fontsize=16)
     ax5.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
     ax5.legend(fontsize=11)
@@ -266,4 +339,4 @@ if __name__ == '__main__':
     fig.suptitle('Efficiency of biocontrol strategies', fontsize=25)
     fig.subplots_adjust(wspace=0.15, hspace=0.4)
 
-    fig.savefig(f'{dir_figs}/Fig 2.jpeg')
+    fig.savefig(f'{dir_figs}/Fig 5.jpeg')

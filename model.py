@@ -47,7 +47,7 @@ pobs = ObsPobs.de_cuadro(
 )
 exper_A = Exper('Site A', Parcela('Site A', geom=GeomParcela((7.297, 79.865))))
 exper_A.datos.agregar_obs(pobs)
-simul = Modelo(web)
+modelo = Modelo(web)
 
 if __name__ == '__main__':
 
@@ -59,14 +59,14 @@ if __name__ == '__main__':
 
     # Calibrate
     start_date = '1982-04-01'  # Perera article is unclear about precise start month, but it seems to be in 1982.
-    simul.calibrar('Sitio A', exper=exper_A, t=start_date)
+    modelo.calibrar('Sitio A', exper=exper_A, t=start_date)
 
     # Save results
-    simul.guardar_calibs('out/Site A calibs')
+    modelo.guardar_calibs('out/Site A calibs')
     exper_A.guardar_calibs('out/Site A calibs')
 
     # Validate and graph
-    res = simul.simular(
+    res = modelo.simular(
         'valid', exper=exper_A, reps=30, t=start_date, calibs=EspecCalibsCorrida(aprioris=False), depurar=True
     )
     pprint(res.validar().a_dic())
