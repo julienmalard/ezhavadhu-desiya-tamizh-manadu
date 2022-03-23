@@ -20,12 +20,13 @@ Oarenosella = MetamCompleta('O. arenosella', njuvenil=5)
 Larval_paras = Parasitoide('Parasitoide larvas', pupa=True)
 Pupal_paras = Parasitoide('Parasitoide pupa')
 
-# Trophic relationships
-Larval_paras.parasita(Oarenosella, ['juvenil 3', 'juvenil 4', 'juvenil 5'], etp_emerg='juvenil 5')
-Pupal_paras.parasita(Oarenosella, 'pupa', etp_emerg='pupa')
-
 # Create food web
 web = RedAE([Oarenosella, Larval_paras, Pupal_paras])
+
+# Trophic relationships
+# with web:
+Larval_paras.parasita(Oarenosella, ['juvenil 3', 'juvenil 4', 'juvenil 5'], etp_emerg='juvenil 5')
+Pupal_paras.parasita(Oarenosella, 'pupa', etp_emerg='pupa')
 
 # Observed data
 dir_base = os.path.split(__file__)[0]

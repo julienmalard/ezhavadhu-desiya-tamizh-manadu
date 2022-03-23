@@ -20,7 +20,7 @@ from model import web, exper_A, Oarenosella, Larval_paras, Pupal_paras
 
 """
 This code specifies all simulation runs used in the article. It does not actually run any simulations itself, but
-provides run specifications for the `analysis.py` file, where they are then run on demand (and so should not itself 
+provides run specifications for the `பகுப்பாய்வு.py` file, where they are then run on demand (and so should not itself 
 be run directly as a Python script).
 All simulation settings are specified here.
 """
@@ -477,6 +477,22 @@ def process_results(res, all_=False):
 
 # Simple runs
 BaseRun = SingleRun('no control', mgmt=Manejo(), all_vars=True)
+RunSimpleBiocontrolPupa = SingleRun('simple bc pupa', mgmt=Manejo(
+    Regla(CondDía(30), AgregarPob(Pupal_paras['adulto'], parasitoid_dose))
+), all_vars=True)
+RunSimpleBiocontrolLarva = SingleRun('simple bc larvae', mgmt=Manejo(
+    Regla(CondDía(30), AgregarPob(Larval_paras['adulto'], parasitoid_dose))
+), all_vars=True)
+RunSimplePesticideExceptEggs = SingleRun('simple pstc expt eggs', mgmt=Manejo(
+    Regla(CondDía(30), MultPob([s for s in not_eggs], survival))
+), all_vars=True)
+RunSimplePesticideAdult = SingleRun('simple pstc adult', mgmt=Manejo(
+    Regla(CondDía(30), MultPob([s for s in adults], survival))
+), all_vars=True)
+RunSimplePesticideGeneral = SingleRun('simple pstcd general', mgmt=Manejo(
+    Regla(CondDía(30), MultPob([s for s in stages], survival))
+), all_vars=True)
+
 NoPupalParas = SingleRun(
     'without pupal paras', mgmt=Manejo(Regla(CondCadaDía(1), MultPob(Pupal_paras['adulto'], 0)))
 )
@@ -501,7 +517,7 @@ NoLarvalParasto150 = SingleRun(
 # Time range for fixed date actions
 time_range = range(1, 61, 2)
 
-RunPesticideAdults = DateRun('fd pstcd expt adult', time_range, action=MultPob([s for s in adults], survival))
+RunPesticideAdults = DateRun('fd pstcd adult', time_range, action=MultPob([s for s in adults], survival))
 RunPesticideExcptEggs = DateRun('fd pstcd expt eggs', time_range, action=MultPob([s for s in not_eggs], survival))
 RunPesticideExcptSedent = DateRun('fd pstcd expt sedent', time_range, action=MultPob([s for s in not_sedent], survival))
 RunPesticideGeneral = DateRun('fd pstcd general', time_range, action=MultPob([s for s in stages], survival))
