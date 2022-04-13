@@ -11,5 +11,8 @@ except StopIteration:
         "NotoSansTamil என்று தமிழ் எழுத்துரு நிறுவல் செய்யவும்: "
         "https://fonts.google.com/noto/specimen/Noto+Sans+Tamil?noto.query=tamil"
     )
-
 எழுத்துரு = font_manager.FontProperties(fname=எழுத்துரு_பெயர்)
+
+
+def அளவுடன்_எழுத்துரு(அளவு):
+    return font_manager.FontProperties(size=அளவு, fname=எழுத்துரு_பெயர்)
